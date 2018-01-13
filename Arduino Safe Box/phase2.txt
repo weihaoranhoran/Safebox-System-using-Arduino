@@ -1,0 +1,482 @@
+//Designed for CHUK-IE IERG4230 course
+//2016.01.19
+//Copyright reserved
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include "IERG4230.h"
+#include "XBee.h"
+
+// === start #define =============================================================
+#define debugPerformance            //Comment it 
+#define yunI2CAddress  0x18         //Dont modify, yun I2C address
+#define xBeeI2CAddress 0x27         //Dont modify, xBee I2C address
+#define keyI2CAddress  0x23         //Dont modify, 16-key keypade I2C address
+#define lcdI2CAddress  0x26         //Dont modify, LCD I2C address
+
+unsigned long performanceCounter;                 //Dont modify, for performance test
+char  xBeeId0, xBeeId1;               // variable stores xBee ID fro DIP switches
+char keyI2Cdata0, keyI2Cdata1;        //variables store current 16-key keypad status
+char keyI2Cdata0old, keyI2Cdata1old;  //variables store pervious 16-key keypad status
+char keyI2Cchanged;                   //variable indicates keypad is changed
+
+LcdI2C8Bit Lcd(lcdI2CAddress);        //Dont modify, create object LCD
+osEvent task0;                        //Dont modify, for performance test
+// ===== end of #include, #define, essential object and glolbal variables  ===========
+//== variable for xBee, decleared in xBee.h ===
+extern char xBeeRxCmd;
+extern String xBeeRxMessage;
+extern boolean xBeeApiResponse;
+extern char xBeeReceivedDelimiter;
+extern osEvent xBeeSerial_RX;
+extern SoftwareSerial xBeeSerial;
+extern int xBeeCmd_Len;
+extern boolean xBeeReceived91;
+extern byte xBeePanId[2];
+extern char xBeePara;
+
+// ===== create user defined objects ====
+osEvent task1, task2, task3, task4, task5, task6, task7, task8, task9, task10; //10 tasks object are created for used.
+dOut led1(3), led2(5), led3(6);      //create objects, three on board LEDs as digital outputs
+dIn key1(7), key0(2);                //create objects, two on board switches as digital inputs.
+aIn aI0(A0), aI1(A1), aI2(A2), aI3(A3), aI4(A6), aI5(A7); //create object, six analog inputs
+int temp_i;
+int lcdCounter = 0;
+
+//==== Global Variable for xBee ====
+//String xBeeEMac = "0013A20040E98CDE";   // MAC Addr (E)
+String xBeeEMac = "000000000000FFFF";   // MAC Addr, boardcast (E)
+
+//==
+bool codeValide=false;
+
+char passcode[]="123456";
+char inputcode[]="______";
+char modified_codeBuffer[]="______";
+char ensure_codeBuffer[]="______";
+int inputsize=0;
+int process=0;
+//==
+void setup()
+{
+  delay(100);
+  Wire.begin(); //start I2C bus, default 9600
+  I2CRead2Byte(xBeeI2CAddress, &xBeeId0, &xBeeId1);  //read ID for xBee
+  I2CRead2Byte(keyI2CAddress, &keyI2Cdata0old, &keyI2Cdata1old);
+  keyI2Cchanged = 0;
+  Serial.begin(9600);   //enable hwUART
+  xBeeSerial.begin(9600); //enable swUART
+  osEvent::osTimer = millis();
+  Lcd.setUp();
+  //=== dont modify above setup
+  //=== user can start task at starting
+  LCDshwoWelcomePage();
+  task0.timerSet(100); //performance check start after 100ms
+  task1.timerSet(100);  //task1 stast after 100ms
+  
+
+  xBeePanId[0] = (byte) xBeeId0;
+  xBeePanId[1] = (byte) xBeeId1;
+  //////////////////////////////////////////////////////////////
+  //  pan = String(PANID[0]) + String(PANID[1]);
+  //  Serial.println(pan);
+    xBeeSetCmd(0x09,0x01, "", "", "ID", xBeePanId[0], xBeePanId[1],0x00);//ATID
+    xBeeSetCmd(0x08,0x01, "", "", "WR", 0x00, 0x00 ,0x00); //ATWR
+    xBeeSetCmd(0x08,0x01, "", "", "AC", 0x00, 0x00 ,0x00); //ATAC
+  //////////////////////////////////////////////////////////////
+}
+
+void loop()
+{
+  while (Serial.available())
+  {
+    //read data from hardware buffer
+  } 
+  while (xBeeSerial.available())
+  {
+    //read data from software buffer
+    xBeeSWRX();
+    break;
+  }
+  performanceCounter++; //dont remove, for performace test
+  hal_eventUpdate();               //check Hardware events
+  if (osEvent::osTimer != millis()) timeStampUpdate();
+  if (task0.isSet()) task0_handler();  //for performance test
+  //---- dont modify above lines, user add own task handlers below ---
+  if (xBeeSerial_RX.isSet()) xBeeSerial_RX_handler();
+  if (task1.isSet()) task1_handler(); //when task-1 timeout
+//    if (key1.eventDown) key1_downHandler();
+//    if (key1.eventUp) key1_upHandler();
+//    if (task2.isSet()) task2_handler();
+//    if (task3.isSet()) task3_handler();
+//    if (task4.isSet()) task4_handler();
+   if (key0.eventDown) key0_downHandler();
+   if (key1.eventDown) key1_downHandler();
+   if(keyI2Cchanged==1)keypad_Handler();  
+}
+//----------------------------------------
+//--- user's add handlers and subroutines below here
+void task1_handler(void)  //LED3 flashing
+{
+  task1.clean(); //
+  led3.toggle();
+  task1.timerSet(1000);
+}
+
+// --- user LCD handlers ----
+void LCDshwoWelcomePage(void)
+{
+  Lcd.displayString(0, " CUHK-IE  IERG4230  ");
+  Lcd.displayString(1, " input your passcode");
+  Lcd.displayString(2, "press A to make sure");
+ 
+}
+void LCD_mistake(void)
+{
+  Lcd.displayString(0, " Invalide passcode  ");
+ 
+}
+
+void LCD_inputRight(void)
+{
+   Lcd.displayString(0, "the PWC is right");
+}
+
+void LCD_tryAgain(void)
+{
+ Lcd.displayString(0, "Input your new passcode, aging  ");
+}
+
+void LCD_ensure(void)
+{
+  Lcd.displayString(0, " input your passcode again ");
+}
+
+void LCD_invalide_modification(void)
+{
+  Lcd.displayString(0, "Fail: the codes don't match ");
+}
+
+void LCD_valide_modification(void)
+{
+  Lcd.displayString(0, "Done: set a new passcode.   ");
+}
+
+void LCD_input_code_mistake(void)
+{
+  Lcd.displayString(0, "It is a wrong passcode.   ");
+}
+
+void key0_downHandler() // SW11
+{
+  key0.eventDown = 0;
+  if ( xBeeSetCmd(0x08,0x01, "", "", "D1", 0x05, 0x00 ,0x00) == 0) //Refer to xBee.h
+    Serial.println("OK");   
+  else 
+    Serial.println("Failed");
+}
+
+void key1_downHandler() // SW12
+{
+  key1.eventDown = 0;
+  if ( xBeeSetCmd(0x08,0x01, "", "", "D1", 0x04, 0x00 ,0x00) == 0) //Refer to xBee.h
+    Serial.println("OK");   
+  else 
+    Serial.println("Failed");
+}
+
+void record_codeInput(void)
+{
+  
+  if((byte)keyI2Cdata0==251)  
+  inputcode[inputsize++]='0';
+  if((byte)keyI2Cdata1==247)  
+  inputcode[inputsize++]='1';
+  if((byte)keyI2Cdata1==251)  
+  inputcode[inputsize++]='2';
+  if((byte)keyI2Cdata1==253)  
+  inputcode[inputsize++]='3';
+  if((byte)keyI2Cdata1==254)  
+  inputcode[inputsize++]='4';
+  if((byte)keyI2Cdata0==127)  
+  inputcode[inputsize++]='5';
+  if((byte)keyI2Cdata0==191)  
+  inputcode[inputsize++]='6';
+  if((byte)keyI2Cdata0==223)  
+  inputcode[inputsize++]='7';
+  if((byte)keyI2Cdata0==239)  
+  inputcode[inputsize++]='8';
+  if((byte)keyI2Cdata0==247)  
+  inputcode[inputsize++]='9';
+ Lcd.displayString(2,"inputsize: ");
+ Lcd.showFigure(2,11,3,inputsize);
+ Lcd.displayString(3,inputcode);  
+}
+
+void record_modified_codeInput(void)
+{
+  if((byte)keyI2Cdata0==251)  
+  modified_codeBuffer[inputsize++]='0';
+  if((byte)keyI2Cdata1==247)  
+  modified_codeBuffer[inputsize++]='1';
+  if((byte)keyI2Cdata1==251)  
+  modified_codeBuffer[inputsize++]='2';
+  if((byte)keyI2Cdata1==253)  
+ modified_codeBuffer[inputsize++]='3';
+  if((byte)keyI2Cdata1==254)  
+  modified_codeBuffer[inputsize++]='4';
+  if((byte)keyI2Cdata0==127)  
+  modified_codeBuffer[inputsize++]='5';
+  if((byte)keyI2Cdata0==191)  
+  modified_codeBuffer[inputsize++]='6';
+  if((byte)keyI2Cdata0==223)  
+  modified_codeBuffer[inputsize++]='7';
+  if((byte)keyI2Cdata0==239)  
+  modified_codeBuffer[inputsize++]='8';
+  if((byte)keyI2Cdata0==247)  
+  modified_codeBuffer[inputsize++]='9';
+ Lcd.displayString(2,"inputsize: ");
+ Lcd.showFigure(2,11,3,inputsize);
+ Lcd.displayString(3,inputcode);  
+}
+
+void record_ensure_codeInput(void)
+{
+  if((byte)keyI2Cdata0==251)  
+  ensure_codeBuffer[inputsize++]='0';
+  if((byte)keyI2Cdata1==247)  
+  ensure_codeBuffer[inputsize++]='1';
+  if((byte)keyI2Cdata1==251)  
+  ensure_codeBuffer[inputsize++]='2';
+  if((byte)keyI2Cdata1==253)  
+  ensure_codeBuffer[inputsize++]='3';
+  if((byte)keyI2Cdata1==254)  
+  ensure_codeBuffer[inputsize++]='4';
+  if((byte)keyI2Cdata0==127)  
+  ensure_codeBuffer[inputsize++]='5';
+  if((byte)keyI2Cdata0==191)  
+  ensure_codeBuffer[inputsize++]='6';
+  if((byte)keyI2Cdata0==223)  
+  ensure_codeBuffer[inputsize++]='7';
+  if((byte)keyI2Cdata0==239)  
+  ensure_codeBuffer[inputsize++]='8';
+  if((byte)keyI2Cdata0==247)  
+  ensure_codeBuffer[inputsize++]='9';
+ 
+ Lcd.displayString(2,"inputsize: ");
+ Lcd.showFigure(2,11,3,inputsize);
+ Lcd.displayString(3,inputcode);  
+}
+void reset()
+{
+codeValide=false;
+for(int i=0;i<6;i++)
+  inputcode[i]='_';  
+inputsize=0;
+LCDshwoWelcomePage();
+}
+void input_code_handler()
+{
+  if((byte)keyI2Cdata0==254)   //try to set a code
+   {
+    process=1;
+    Lcd.displayString(0,"modify code: ");
+    Lcd.displayString(1,"input original code:");
+    delay(100);
+    return;
+   }
+   if((byte)keyI2Cdata1==127)
+   {
+    reset();
+    return;
+   }
+   
+  if(inputsize<6)
+  {
+  record_codeInput();
+  return;
+  }
+  if(inputsize>=6&&(byte)keyI2Cdata0==253)
+  {
+    if(process==0)
+    {
+      codeValide=true;
+      for(int i=0;i<6;i++)
+      {
+        if(inputcode[i]!=passcode[i])
+        {
+          codeValide=false;
+          break;  
+        }  
+      }
+      
+        if(codeValide)
+        {LCD_inputRight(); 
+        delay(600000);
+        codeValide=false;
+      inputsize=0; for(int i=0;i<6;i++)inputcode[i]='_';
+        }
+        else
+        LCD_mistake();
+    }
+    if(process==1&&(byte)keyI2Cdata0==253)
+    {
+     codeValide=true;
+      for(int i=0;i<6;i++)
+      {
+        if(inputcode[i]!=passcode[i])
+        {
+          codeValide=false;
+          break;  
+        }  
+      }
+      if(!codeValide)
+      {
+       LCD_mistake();  
+      }
+      else
+      {
+       process=2;
+       LCD_ensure();  
+       codeValide==false;
+      }
+      inputsize=0; for(int i=0;i<6;i++)inputcode[i]='_';
+    }
+   
+  }
+  
+}
+
+void modify_code_handler(void)
+{
+  if(inputsize<6)
+  record_modified_codeInput();
+  if(inputsize>=6&&(byte)keyI2Cdata0==253)
+ { process=3;LCD_tryAgain();inputsize=0;}
+}
+
+void ensure_code_handler(void)
+{
+  if(inputsize<6)
+  record_ensure_codeInput();
+  if(inputsize>=6&&(byte)keyI2Cdata0==253)
+   {
+   for(int i=0;i<6;i++)
+    {
+      if(modified_codeBuffer[i]!=ensure_codeBuffer[i])
+      {
+        LCD_invalide_modification();
+        return;
+      }
+    } 
+    for(int i=0;i<6;i++)
+      passcode[i]=ensure_codeBuffer[i];
+    LCD_valide_modification();
+    process=0; inputsize=0;
+   }
+}
+
+void keypad_Handler()
+{
+//if(process=4)
+ //Lcd.showFigure(3,0, 4,  (byte) aI0.value);
+
+ // Lcd.clear();
+  if(process==0||process==1)
+  {
+  input_code_handler();  
+  }
+  if(process==2)
+  {
+  modify_code_handler();  
+  }
+   if(process==3)
+  {
+  ensure_code_handler();  
+  }
+  delay(200);
+}
+
+void xBeeSerial_RX_handler() 
+{
+  xBeeSerial_RX.clean();
+  if (xBeeRxCmd == 1)  xBeeCheckCmd();
+  xBeeSerial_RX.timerSet(1000);
+}
+
+//////////////////////////////////////////////////////////////////
+//Function to decode the received message "xBeeRxMessage" from xBee
+void xBeeCheckCmd(void)
+{
+  String RX_message;
+  RX_message = xBeeRxMessage;
+  Serial.print("RX_message=");
+  Serial.println(RX_message);
+  ///////////////////////////////////////////////////////////
+  //Put your code for Experiment 3.3 and Experiment 3.4 here
+  //The following funmctions are recommended to use, please search from internet
+  //RX_message.substring()
+  //RX_message.length()
+  //
+  //////////////////////////////////////////////////////////
+    
+  xBeeRxMessage = "";
+  xBeeRxCmd = 0;
+  xBeeApiResponse = 0;
+  xBeeReceivedDelimiter = 0;
+}
+
+//------below are  basic OS subroutines -------------------
+//---You may need to modify them if you change the hardware ---
+void hal_eventUpdate(void)
+{
+  //==read I2C 16key keypad
+  I2CRead2Byte(keyI2CAddress, &keyI2Cdata0, &keyI2Cdata1);
+  if (keyI2Cdata0 != keyI2Cdata0old) keyI2Cchanged = 1;
+  if (keyI2Cdata1 != keyI2Cdata1old)  keyI2Cchanged = 1;
+  keyI2Cdata0old = keyI2Cdata0;
+  keyI2Cdata1old = keyI2Cdata1;
+  //==end of read I2C 16key keypad
+  //== comment/uncomment the followings for used hardware
+  key0.dataUpdate();
+  key1.dataUpdate();
+  aI0.dataUpdate();
+  aI1.dataUpdate();
+  aI2.dataUpdate();
+  aI3.dataUpdate();
+}
+
+void timeStampUpdate(void)   // no need to modify this function unless you know what you are doing.
+{
+  int i;
+  unsigned long temp;
+  temp = millis();
+  if (osEvent::osTimer > temp) i = 1;
+  else i = (int)(temp - osEvent::osTimer);
+  osEvent::osTimer = temp;
+  xBeeSerial_RX.timerUpdate(i);
+  //---- user add their own tasks if necessary
+  task0.timerUpdate(i);
+  task1.timerUpdate(i);
+  task2.timerUpdate(i);
+  task3.timerUpdate(i);
+  task4.timerUpdate(i);
+  task5.timerUpdate(i);
+  task6.timerUpdate(i);
+  task7.timerUpdate(i);
+  task8.timerUpdate(i);
+  task9.timerUpdate(i);
+  task10.timerUpdate(i);
+}
+
+void task0_handler() // Dont modify, for performace test
+{ 
+  task0.clean();
+  #ifdef debugPerformance
+    Serial.println(performanceCounter);
+  #endif
+  performanceCounter = 0;
+  task0.timerSet(1000);
+}
+//====  End of OS ========================
+

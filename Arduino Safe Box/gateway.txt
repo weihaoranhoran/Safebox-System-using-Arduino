@@ -1,0 +1,77 @@
+#include <Process.h>
+#include <Wire.h>
+
+int callRunCurl = 0;
+void setup()
+{
+  pinMode(13, OUTPUT); //IERG4230 added
+  Wire.begin(0x18); //IERG4230 added, i2c slave address
+  Wire.onReceive(receiveEvent); //IERG4230 added, register event
+  // Initialize Bridge
+  Bridge.begin();
+
+  // Initialize Serial
+  Serial.begin(9600);
+
+  // Wait until a Serial Monitor is connected.
+  // while (!Serial);
+  
+  // run various example processes
+  // runCurl();
+ runCurl(6); //IERG4230, for test
+}
+
+void loop()
+{
+  if (callRunCurl > 0) 
+  { 
+    runCurl(callRunCurl);
+    callRunCurl=0;
+  }
+}
+
+void runCurl(int x) {
+  // Launch "curl" command and get Arduino ascii art logo from the network
+  // curl is command line program for transferring data using different internet protocols
+  Process p;        // Create a process and call it "p"
+  p.begin("curl");  // Process that launch the "curl" command
+  //p.addParameter("http://arduino.cc/asciilogo.txt"); // Add the URL parameter to "curl"
+  if (x == 2) p.addParameter("http://personal.ie.cuhk.edu.hk/~ly216/switch1.php?act=on&d_id=00000001"); // IERG4230, Add the URL parameter to "curl"
+  else if (x == 3) p.addParameter("http://personal.ie.cuhk.edu.hk/~ly216/switch1.php?act=off&d_id=00000001"); //IERG4230,  Add the URL parameter to "curl"
+  else p.addParameter("http://personal.ie.cuhk.edu.hk/~ly216/switch1.php?act=change"); //IERG4230,  Add the URL parameter to "curl"
+  p.run();      // Run the process and wait for its termination
+
+  // Print arduino logo over the Serial
+  // A process output can be read with the stream methods
+  while (p.available() > 0) 
+  {
+    char c = p.read();
+    Serial.print(c);
+  }
+  // Ensure the last bit of data is sent.
+  Serial.flush();
+
+}
+
+void receiveEvent(int howMany)
+{
+    while (1 < Wire.available())
+    {
+      char c = Wire.read(); // receive byte as a character
+    }
+  int x = Wire.read();    // receive byte as an integer
+  if (x == 0x32)
+  {
+    callRunCurl = 2;
+    digitalWrite(13, LOW);
+  }
+  if (x == 0x33)
+  {
+    callRunCurl = 3;
+    digitalWrite(13, HIGH);
+  }
+  if (x == 0x34)
+  {
+    callRunCurl = 4;
+  }
+}
